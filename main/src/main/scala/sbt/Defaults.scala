@@ -2351,7 +2351,7 @@ object Defaults extends BuildCommon with DefExtra:
     if
       streams.value.log
         .debug(s"${name.value}: compileEarly: blocking on earlyOutputPing")
-      earlyOutputPing.await.value
+      awaitEarlyOutput.value
     then
       val c = fileConverter.value
       val store = analysisStore(earlyCompileAnalysisFile.value.toPath(), c)
@@ -2359,6 +2359,16 @@ object Defaults extends BuildCommon with DefExtra:
         case Some(contents) => contents.getAnalysis
         case _              => Analysis.empty
     else compile.value
+  }
+
+  /**
+   * Block on earlyOutputPing unless compile inputs failed, in which case compile never runs
+   * and nothing would complete the ping.
+   */
+  private[sbt] def awaitEarlyOutput: Initialize[Task[Boolean]] = Def.task {
+    // This is a conditional task.
+    if (compile / compileInputs).result.value.toEither.isRight then earlyOutputPing.await.value
+    else false
   }
 
   def compileTask: Initialize[Task[CompileAnalysis]] = Def.task {
@@ -4631,7 +4641,7 @@ object Classpaths:
 
   private[sbt] def makePickleProducts: Initialize[Task[Seq[VirtualFile]]] = Def.task {
     // This is a conditional task.
-    if earlyOutputPing.await.value then
+    if Defaults.awaitEarlyOutput.value then
       // TODO: copyResources.value
       earlyOutput.value :: Nil
     else
