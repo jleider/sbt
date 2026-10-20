@@ -687,21 +687,33 @@ object Compiler:
       case None      => options
       case Some(out) =>
         val converter = MappedFileConverter(Map("OUT" -> out), allowMachinePath = true)
-        val targetRoot = "-P:semanticdb:targetroot:"
-        def toId(value: String): String =
+        mapOutputPaths(options): value =>
           try
             val path = Paths.get(value)
             if path.startsWith(out) then converter.toVirtualFile(path).id else value
           catch case _: InvalidPathException => value
-        def loop(options: Seq[String]): Seq[String] =
-          options match
-            case (flag @ ("-Ypickle-write" | "-semanticdb-target")) +: value +: rest =>
-              flag +: toId(value) +: loop(rest)
-            case head +: rest if head.startsWith(targetRoot) =>
-              (targetRoot + toId(head.stripPrefix(targetRoot))) +: loop(rest)
-            case head +: rest => head +: loop(rest)
-            case _            => Seq.empty
-        loop(options)
+
+  /** The inverse of [[virtualizeScalacOptions]]: resolves the `${OUT}` ids it writes. */
+  private[sbt] def resolveScalacOutputPaths(
+      options: Seq[String],
+      rootPaths: Map[String, Path]
+  ): Seq[String] =
+    rootPaths.get("OUT") match
+      case None      => options
+      case Some(out) =>
+        mapOutputPaths(options): value =>
+          if value.startsWith("${OUT}/") then out.resolve(value.stripPrefix("${OUT}/")).toString
+          else value
+
+  private def mapOutputPaths(options: Seq[String])(f: String => String): Seq[String] =
+    val targetRoot = "-P:semanticdb:targetroot:"
+    options match
+      case (flag @ ("-Ypickle-write" | "-semanticdb-target")) +: value +: rest =>
+        flag +: f(value) +: mapOutputPaths(rest)(f)
+      case head +: rest if head.startsWith(targetRoot) =>
+        (targetRoot + f(head.stripPrefix(targetRoot))) +: mapOutputPaths(rest)(f)
+      case head +: rest => head +: mapOutputPaths(rest)(f)
+      case _            => Seq.empty
 
   /**
    * Deletes restored outputs whose CAS blob is gone (sbt/sbt#9849): a dangling analysis together

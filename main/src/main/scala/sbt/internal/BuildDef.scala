@@ -24,6 +24,7 @@ import sbt.internal.inc.{
   Compilations,
   FileAnalysisStore,
   HashUtil,
+  MappedFileConverter,
   MixedAnalyzingCompiler,
   ReflectUtilities
 }
@@ -200,29 +201,50 @@ private[sbt] object BuildDef:
   private[sbt] def cachedAnalysisStore(path: NioPath, converter: FileConverter): AnalysisStore =
     CachedAnalysisStore(path, converter)
 
+  /**
+   * Maps the scalacOptions recorded in an analysis. CachedAnalysisStore writes sbt's output paths
+   * in them as `${OUT}` ids and resolves those on read, so that an analysis restored by a cache hit
+   * in another checkout records the options of the current compile, and Zinc does not take the
+   * setup as changed and recompile every source.
+   */
+  private def mapScalacOptions(contents: AnalysisContents)(
+      f: Seq[String] => Seq[String]
+  ): AnalysisContents =
+    Option(contents.getMiniSetup) match
+      case Some(setup) =>
+        val options = setup.options
+        val mapped = options.withScalacOptions(f(options.scalacOptions.toSeq).toArray)
+        AnalysisContents.create(contents.getAnalysis, setup.withOptions(mapped))
+      case None => contents
+
   private class CachedAnalysisStore(path: NioPath, converter: FileConverter) extends AnalysisStore:
     private val underlying = MixedAnalyzingCompiler.staticCachedStore(
       analysisFile = path,
       useTextAnalysis = false,
       cacheLast = false,
     )
+    private val rootPaths = converter match
+      case c: MappedFileConverter => c.rootPaths
+      case _                      => Map.empty[String, NioPath]
+    private def read: Optional[AnalysisContents] =
+      underlying.get.map(mapScalacOptions(_)(Compiler.resolveScalacOutputPaths(_, rootPaths)))
     override def get: Optional[AnalysisContents] =
       val ref: VirtualFileRef = converter.toVirtualFile(path)
       try
         val attrs = Files.readAttributes(path, classOf[BasicFileAttributes])
-        if attrs.isDirectory then underlying.get
+        if attrs.isDirectory then read
         else
           val lastModified = attrs.lastModifiedTime().toMillis()
           val sizeBytes = attrs.size()
-          getOrElseUpdate(ref, path, lastModified, sizeBytes)(underlying.get.toScala).toJava
-      catch case _: NoSuchFileException => underlying.get
+          getOrElseUpdate(ref, path, lastModified, sizeBytes)(read.toScala).toJava
+      catch case _: NoSuchFileException => read
 
     override def unsafeGet: AnalysisContents = get.toScala.get
 
     override def set(contents: AnalysisContents): Unit =
       val ref: VirtualFileRef = converter.toVirtualFile(path)
       inMemoryAnalysisCache.invalidate(ref.id())
-      underlying.set(contents)
+      underlying.set(mapScalacOptions(contents)(Compiler.virtualizeScalacOptions(_, rootPaths)))
       // the attributes have to be the written file's, not the ones it had before the write, which
       // assumes this path has no other writer: one compile per project and configuration
       try

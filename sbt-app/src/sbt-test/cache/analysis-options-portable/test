@@ -1,0 +1,18 @@
+# The analysis restored by a cache hit records the scalacOptions of the compile that produced it.
+# A checkout with another output directory must not see those options as changed, or its first
+# edit after the hit recompiles every source rather than the edited one. The reboot gives the
+# second checkout its own sbt, as a git worktree would have. The compiler plugin built in this
+# build reaches scalacOptions as an -Xplugin:${OUT} id, which the analysis must keep as written.
+> clean
+> use/compile
+$ copy-file changes/out2.sbt out2.sbt
+> reboot full
+> use/compile
+> checkHit
+$ touch marker
+$ sleep 1000
+$ copy-file changes/C.scala use/src/main/scala/C.scala
+> use/compile
+$ exists out2/jvm/scala-3.8.4/use/classes/A1.class
+$ newer out2/jvm/scala-3.8.4/use/classes/C.class marker
+-$ newer out2/jvm/scala-3.8.4/use/classes/A1.class marker

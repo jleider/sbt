@@ -54,7 +54,30 @@ object CompilerVirtualizeOptsTest extends Properties:
       "a trailing output flag without its value is unchanged",
       check(Seq("-deprecation", "-Ypickle-write"), Seq("-deprecation", "-Ypickle-write"))
     ),
+    example(
+      "resolving keeps ${OUT} ids outside the output paths as written",
+      Result.assert(
+        Compiler.resolveScalacOutputPaths(Seq("-Xplugin:${OUT}/p.jar"), rootPaths) ==
+          Seq("-Xplugin:${OUT}/p.jar")
+      )
+    ),
+    property("resolving virtualized output paths gives back the options", propRoundTrip),
   )
+
+  def propRoundTrip: Property =
+    for
+      segments <- Gen
+        .list(Gen.string(Gen.alphaNum, Range.linear(1, 10)), Range.linear(1, 4))
+        .forAll
+      path = segments.foldLeft(out)(_.resolve(_)).toString
+    yield
+      val options = Seq("-Ypickle-write", path, "-semanticdb-target", path)
+        :+ s"-P:semanticdb:targetroot:$path"
+      val virtualized = Compiler.virtualizeScalacOptions(options, rootPaths)
+      Result
+        .assert(!virtualized.exists(_.contains(out.toString)))
+        .and(Result.assert(Compiler.resolveScalacOutputPaths(virtualized, rootPaths) == options))
+        .log(s"virtualized: $virtualized")
 
   private def check(input: Seq[String], expected: Seq[String]): Result =
     val got = Compiler.virtualizeScalacOptions(input, rootPaths)
